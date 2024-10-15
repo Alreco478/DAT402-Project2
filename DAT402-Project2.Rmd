@@ -1,0 +1,330 @@
+---
+title: "DAT402-Project2"
+author: "Alexander Coover"
+date: "2024-04-16"
+output: html_document
+---
+
+Dataset: 
+The dataset I selected contains 114 different genres of music, with 1000 songs per genre from Spotify. Each row contains various different metrics and information about the song. Some of the metrics include popularity from 0-100, duration of the song, danceability, energy, key, etc. For the exact features used, refer to the variable importance plot.
+
+Project Summary:
+For my first project in this class, I used Naive Bayes to try my best and make predictions of what genre a song is based on the features of my dataset. I created a valid model, but I know a lot more machine learning practices now, so I decided to use a random forest to make predictions this time. In addition to cleaning up my Project 1 a bit, I also created code for hierarchical clustering from scratch so that I could combine the 114 different genres present in the dataset into a much smaller pool to select from. After narrowing the pool down to the final genre groups, I created naive bayes and random forest models, then showed how successful each one was using both overall accuracy and accuracy per genre. 
+
+Conclusion: 
+The hierarchical clustering was incredibly effective in combining similar genres and was key to the success of the project. I have tested the entire project with 20 final genre groups and got an overall accuracy of 58.7% with naive bayes and 81.7% with random forest. I also tested with 10 final genre groups and got 77% accuracy with naive bayes and 88% accuracy with random forest. I decided to create the report with 13 final groups mainly because the graphs aren't as cluttered as they are with 20, and 10 final groups seemed to be forcing genre combinations that didn't make as much sense.
+
+Possible Areas for further improvement of the project:
+
+- Narrowing down features to reduce dimensionality. Time signature, key, and liveness are not good predictors of genre.
+
+- Optimizing the number of final genre groups. I did not do this because of computing limitations and I did not want to wait for it to run.
+
+- Creating more intentional names for the genre groups. Every time 2 are combined, the decision of which genre takes the other's name is decided by alphabetical order. I could probably look into the tree and come up with one of the genres that is within it, not necessarily the current name, and pick that to best suit the genres contained. 
+
+```{r}
+library(dplyr)
+library(data.table)
+library(e1071)
+library(ggplot2)
+library(rpart)
+library(randomForest)
+
+# read in file
+df = read.csv(file = "dataset.csv")
+# remove columns that will not be used in the model
+df$X = NULL
+df$track_id = NULL
+df$artists = NULL
+df$album_name = NULL
+df$track_name = NULL
+df$Column1 = NULL
+df$mode = NULL
+df$explicit = NULL
+
+# filter data to exclude rows with 0 popularity
+df = filter(df, popularity > 0)
+
+```
+
+
+
+```{r}
+
+# combine genres until there are n genres left using hierarchical clustering
+n = 13
+while (length(unique(df$track_genre)) > n) {
+
+# create null dataframe of average values for each genre
+average_df = data.frame(
+  Genre = NULL,
+  Avg_popularity = NULL,
+  Avg_duration = NULL,
+  Avg_danceability = NULL,
+  Avg_energy = NULL,
+  Avg_key = NULL,
+  Avg_loudness = NULL,
+  Avg_speechiness = NULL,
+  Avg_acousticness = NULL,
+  Avg_intrumentalness = NULL,
+  Avg_liveness = NULL,
+  Avg_valence = NULL,
+  Avg_tempo = NULL
+)
+
+# fill out the above dataframe
+genres = unique(df$track_genre)
+for (i in genres) {
+  genre_df = filter(df, track_genre == i)
+  average_df = rbind(average_df, data.frame(
+    Genre = i,
+    Avg_popularity = mean(genre_df$popularity),
+    Avg_duration = mean(genre_df$duration_ms),
+    Avg_danceability = mean(genre_df$danceability),
+    Avg_energy = mean(genre_df$energy),
+    Avg_key = mean(genre_df$key),
+    Avg_loudness = mean(genre_df$loudness),
+    Avg_speechiness = mean(genre_df$speechiness),
+    Avg_acousticness = mean(genre_df$acousticness),
+    Avg_instrumentalness = mean(genre_df$instrumentalness),
+    Avg_liveness = mean(genre_df$liveness),
+    Avg_valence = mean(genre_df$valence),
+    Avg_tempo = mean(genre_df$tempo)
+  ))
+}
+
+# standardize the averages for each variable so they each contribute equally to the similarity calculation
+average_df$Avg_popularity = (average_df$Avg_popularity - mean(average_df$Avg_popularity)) / sd(average_df$Avg_popularity)
+average_df$Avg_duration = (average_df$Avg_duration - mean(average_df$Avg_duration)) / sd(average_df$Avg_duration)
+average_df$Avg_danceability = (average_df$Avg_danceability - mean(average_df$Avg_danceability)) / sd(average_df$Avg_danceability)
+average_df$Avg_energy = (average_df$Avg_energy - mean(average_df$Avg_energy)) / sd(average_df$Avg_energy)
+average_df$Avg_key = (average_df$Avg_key - mean(average_df$Avg_key)) / sd(average_df$Avg_key)
+average_df$Avg_loudness = (average_df$Avg_loudness - mean(average_df$Avg_loudness)) / sd(average_df$Avg_loudness)
+average_df$Avg_speechiness = (average_df$Avg_speechiness - mean(average_df$Avg_speechiness)) / sd(average_df$Avg_speechiness)
+average_df$Avg_acousticness = (average_df$Avg_acousticness - mean(average_df$Avg_acousticness)) / sd(average_df$Avg_acousticness)
+average_df$Avg_instrumentalness = (average_df$Avg_instrumentalness - mean(average_df$Avg_instrumentalness)) / sd(average_df$Avg_instrumentalness)
+average_df$Avg_liveness = (average_df$Avg_liveness - mean(average_df$Avg_liveness)) / sd(average_df$Avg_liveness)
+average_df$Avg_valence = (average_df$Avg_valence - mean(average_df$Avg_valence)) / sd(average_df$Avg_valence)
+average_df$Avg_tempo = (average_df$Avg_tempo - mean(average_df$Avg_tempo)) / sd(average_df$Avg_tempo)
+
+# create a dataframe showing the similarity between genres using euclidean distance
+numeric_cols = average_df[, -1]
+distance_matrix = dist(numeric_cols, method = "euclidean")
+similarity_df = as.data.frame(as.matrix(distance_matrix))
+row.names(similarity_df) = average_df$Genre
+colnames(similarity_df) = average_df$Genre
+
+
+find_most_similar = function(similarity_df) {
+  most_similar = Inf
+  genre1 = NULL
+  genre2 = NULL
+  for (i in rownames(similarity_df)) {
+    for (j in colnames(similarity_df)) {
+      if (similarity_df[i,j] < most_similar && similarity_df[i,j] > 0) {
+        most_similar = similarity_df[i,j]
+        genre1 = i
+        genre2 = j
+      }
+    }
+  }
+  return(c(genre1, genre2, most_similar))
+}
+
+find_most_similar(similarity_df)
+new_broader_genre = find_most_similar(similarity_df)[1]
+genre_to_replace = find_most_similar(similarity_df)[2]
+similarity = find_most_similar(similarity_df)[3]
+print(paste("Replacing occurances of ", genre_to_replace, " with ", new_broader_genre, ". Similarity: ", similarity))
+df$track_genre = replace(df$track_genre, df$track_genre == genre_to_replace, new_broader_genre)
+}
+average_df
+similarity_df
+```
+```{r}
+# This section is a repetition of the above section, except it uses the hclust function so that I could make the plot showing the final genres
+
+# create null dataframe of average values for each genre
+average_df = data.frame(
+  Genre = NULL,
+  Avg_popularity = NULL,
+  Avg_duration = NULL,
+  Avg_danceability = NULL,
+  Avg_energy = NULL,
+  Avg_key = NULL,
+  Avg_loudness = NULL,
+  Avg_speechiness = NULL,
+  Avg_acousticness = NULL,
+  Avg_intrumentalness = NULL,
+  Avg_liveness = NULL,
+  Avg_valence = NULL,
+  Avg_tempo = NULL
+)
+
+# fill out the above dataframe
+genres = unique(df$track_genre)
+for (i in genres) {
+  genre_df = filter(df, track_genre == i)
+  average_df = rbind(average_df, data.frame(
+    Genre = i,
+    Avg_popularity = mean(genre_df$popularity),
+    Avg_duration = mean(genre_df$duration_ms),
+    Avg_danceability = mean(genre_df$danceability),
+    Avg_energy = mean(genre_df$energy),
+    Avg_key = mean(genre_df$key),
+    Avg_loudness = mean(genre_df$loudness),
+    Avg_speechiness = mean(genre_df$speechiness),
+    Avg_acousticness = mean(genre_df$acousticness),
+    Avg_instrumentalness = mean(genre_df$instrumentalness),
+    Avg_liveness = mean(genre_df$liveness),
+    Avg_valence = mean(genre_df$valence),
+    Avg_tempo = mean(genre_df$tempo)
+  ))
+}
+
+# Create distance/ similarity matrix
+numeric_cols = average_df[, -1]
+distance_matrix = dist(numeric_cols, method = "euclidean")
+
+# Perform clustering and create graph
+x = hclust(distance_matrix, method = "average", members = NULL)
+plot(x, labels = genres,
+     axes = FALSE,
+     main = "Cluster Dendrogram of the Final Genre Groups",
+     sub = NULL, xlab = NULL, ylab = "Height")
+```
+
+
+
+```{r}
+# set seed and select training/test data
+set.seed(123)
+n = nrow(df)
+tr = sample(x=1:n, size=floor(.8*n), replace=FALSE)
+train = df[tr,]
+test = df[-tr,]
+nt = nrow(test)
+```
+
+
+
+```{r}
+# create naive bayes model using training data
+model = naiveBayes(track_genre ~., data = train)
+# make predictions on the test data
+predictions = predict(model, newdata = test)
+
+# create a dataframe with columns containing the model's prediction and the actual genre
+comparedf = data.frame(predictions,test$track_genre)
+colnames(comparedf) = c("Prediction","Actual")
+nmodified = nrow(comparedf)
+
+# compare the predictions and actual values to count how many are correct
+count = 0
+for (j in 1:nmodified) {
+  if (comparedf$Prediction[j] == comparedf$Actual[j]) {
+    count = count+1
+  }
+}
+
+# display overall accuracy
+overall_acc = count/nmodified
+print(paste("Overall model accuracy: ", overall_acc))
+
+
+# create a vector of all of the genres in the dataset
+genres = unique(comparedf$Actual)
+
+# create an empty vector where the accuracies will be stored by genre
+accuracy_vec = numeric(length(genres))
+
+# iterate through the genres, getting the accuracy for each genre
+for (i in seq_along(genres)) {
+    tempdf = filter(comparedf, Actual == genres[i])
+    count = sum(tempdf$Prediction == tempdf$Actual)
+    accuracy = count / nrow(tempdf)
+    accuracy_vec[i] = accuracy
+}
+
+# create and display a dataframe of the accuracy scores for each genre
+newdf = data.frame(genres, accuracy_vec)
+newdf
+
+# sort the dataframe by accuracy and round to 3 decimals
+newdf = newdf[order(accuracy_vec), ]
+newdf$accuracy_vec = round(newdf$accuracy_vec, 3)
+
+# create a barplot showing all of the genres and how accurate the model is for each one
+ggplot(newdf, aes(x = genres, y = accuracy_vec)) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  geom_text(aes(label = accuracy_vec), vjust = -0.5) +
+  labs(title = "Accuracy by Genre Group for Naive Bayes Model", x = "Genre", y = "Accuracy")
+```
+
+
+
+```{r}
+# Create and plot an example of a single tree
+ttree = rpart(track_genre~., data=train, method="class")
+plot(ttree)
+text(ttree, pretty=0, cex=.7)
+
+# make sure track_genre is in the right format for randomForest function
+train$track_genre = as.factor(train$track_genre)
+test$track_genre = as.factor(test$track_genre)
+
+# create random forest model and make predictions stored in yhat_rf
+rf = randomForest(track_genre~., data=train, ntree = 100)
+yhat_rf = predict(rf, newdata=test)
+
+# create a plot of variable importance given by random forest model
+varImpPlot(rf, main="Variable Importance Plot", col="steelblue")
+
+# create a dataframe that stores the predictions and actual values
+comparedf_rf = data.frame(
+  Predicted = yhat_rf,
+  Actual = test$track_genre)
+
+# compare the predictions and actual values to count how many are correct
+count = 0
+nmodified = nrow(comparedf_rf)
+for (j in 1:nmodified) {
+  if (comparedf_rf$Predicted[j] == comparedf_rf$Actual[j]) {
+    count = count+1
+  }
+}
+
+# display overall accuracy
+overall_acc = count/nmodified
+print(paste("Overall model accuracy: ", overall_acc))
+
+# create a vector of all of the genres in the dataset
+genres = unique(comparedf_rf$Actual)
+
+# create an empty vector where the accuracies will be stored by genre
+accuracy_vec = numeric(length(genres))
+
+# iterate through the genres, getting the accuracy for each genre
+for (i in seq_along(genres)) {
+    tempdf = filter(comparedf_rf, Actual == genres[i])
+    count = sum(tempdf$Predicted == tempdf$Actual)
+    accuracy = count / nrow(tempdf)
+    accuracy_vec[i] = accuracy
+}
+
+# create and display a dataframe of the accuracy scores for each genre
+newdf = data.frame(genres, accuracy_vec)
+newdf
+
+# sort the dataframe by accuracy and round to 3 decimals
+newdf = newdf[order(accuracy_vec), ]
+newdf$accuracy_vec = round(newdf$accuracy_vec, 3)
+
+# create a barplot showing all of the genres and how accurate the model is for each one
+ggplot(newdf, aes(x = genres, y = accuracy_vec)) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  geom_text(aes(label = accuracy_vec), vjust = -0.5) +
+  labs(title = "Accuracy by Genre Group for Random Forest Model", x = "Genre", y = "Accuracy")
+```
+
+
